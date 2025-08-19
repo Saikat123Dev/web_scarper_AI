@@ -1,5 +1,5 @@
-import { ArrowRight, Check, Download, FileText, Globe, Sparkles, Star, Zap } from 'lucide-react';
-import { useState } from 'react';
+import React, { useState } from 'react';
+import { Check, Zap, Globe, Download, FileText, Sparkles, ArrowRight, Star } from 'lucide-react';
 
 export default function ScrappyLandingPage() {
   const [isMonthly, setIsMonthly] = useState(true);
@@ -7,7 +7,7 @@ export default function ScrappyLandingPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white">
-       
+      {/* Animated background elements */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-40 -right-32 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-pulse"></div>
         <div className="absolute -bottom-32 -left-40 w-80 h-80 bg-blue-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-pulse delay-1000"></div>
@@ -39,7 +39,7 @@ export default function ScrappyLandingPage() {
         <div className="max-w-4xl mx-auto">
           <div className="inline-flex items-center space-x-2 bg-white/10 backdrop-blur-sm rounded-full px-4 py-2 mb-8 border border-white/20">
             <Sparkles className="w-4 h-4 text-yellow-400" />
-            <span className="text-sm">Powered by Essential Web Scraper API</span>
+            <span className="text-sm">Powered by Advance Scraper API</span>
           </div>
           
           <h1 className="text-6xl md:text-7xl font-black mb-6 leading-tight">
@@ -55,8 +55,8 @@ export default function ScrappyLandingPage() {
           </p>
 
           {/* Demo Section */}
-          <div className="bg-white/5 backdrop-blur-lg rounded-2xl p-8 border border-white/10 mb-12 max-w-2xl mx-auto">
-            <div className="flex items-center justify-center space-x-4 mb-6">
+          <div className="bg-white/5 backdrop-blur-lg rounded-2xl p-2 border border-white/10 mb-6 max-w-2xl mx-auto">
+            <div className="flex items-center justify-center space-x-6 mb1">
               <button className="bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 px-6 py-3 rounded-xl font-semibold transition-all transform hover:scale-105 flex items-center space-x-2">
                 <FileText className="w-5 h-5" />
                 <span>Get JSON</span>
@@ -65,9 +65,6 @@ export default function ScrappyLandingPage() {
                 <Download className="w-5 h-5" />
                 <span>Get PDF</span>
               </button>
-            </div>
-            <div className="text-sm text-slate-400">
-              Backend running on <code className="bg-slate-800 px-2 py-1 rounded text-purple-400">localhost:4001</code>
             </div>
           </div>
 
@@ -115,10 +112,10 @@ export default function ScrappyLandingPage() {
             }
           ].map((feature, index) => (
             <div key={index} className="bg-white/5 backdrop-blur-lg rounded-2xl p-8 border border-white/10 hover:bg-white/10 transition-all group hover:scale-105">
-              <div className="text-purple-400 mb-4 group-hover:text-purple-300 transition-colors">
+              <div className="text-purple-400 mb-3 group-hover:text-purple-300 transition-colors">
                 {feature.icon}
               </div>
-              <h3 className="text-xl font-bold mb-4">{feature.title}</h3>
+              <h3 className="text-xl font-bold mb-2">{feature.title}</h3>
               <p className="text-slate-300 leading-relaxed">{feature.description}</p>
             </div>
           ))}
@@ -227,26 +224,9 @@ export default function ScrappyLandingPage() {
           </div>
         </div>
 
-        <div className="text-center mt-12">
-          <p className="text-slate-400">
-            Need enterprise solutions? <a href="#contact" className="text-purple-400 hover:text-purple-300 underline">Contact our sales team</a>
-          </p>
-        </div>
       </section>
 
-      {/* CTA Section */}
-      <section className="relative z-10 container mx-auto px-6 py-20 text-center">
-        <div className="bg-gradient-to-r from-purple-500/20 to-blue-500/20 backdrop-blur-lg rounded-3xl p-12 border border-purple-500/30 max-w-4xl mx-auto">
-          <h2 className="text-4xl md:text-5xl font-bold mb-6">Ready to Start Scraping?</h2>
-          <p className="text-xl text-slate-300 mb-8 max-w-2xl mx-auto">
-            Join thousands of developers who trust Scrappy for their web scraping needs. 
-            Start with our free plan and upgrade when you're ready.
-          </p>
-          <button className="bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 px-10 py-4 rounded-xl text-xl font-semibold transition-all transform hover:scale-105 shadow-lg">
-            Start Scraping Now
-          </button>
-        </div>
-      </section>
+
 
       {/* Footer */}
       <footer className="relative z-10 container mx-auto px-6 py-12 border-t border-white/10">
@@ -265,7 +245,7 @@ export default function ScrappyLandingPage() {
           </div>
         </div>
         <div className="text-center mt-8 text-slate-400">
-          <p>&copy; 2025 Scrappy. Built with ❤️ for developers.</p>
+          <p>&copy; 2025 Scrappy. Built with ❤️.</p>
         </div>
       </footer>
     </div>

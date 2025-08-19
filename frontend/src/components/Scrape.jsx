@@ -1,9 +1,10 @@
-import { AlertCircle, CheckCircle, Clock, Copy, Download, Eye, FileDown, FileText, Globe, Loader2, Search, Sparkles, Languages, Settings } from 'lucide-react';
-import { useState, useEffect } from 'react';
-import LogoutButton from "./Logout"
+import { AlertCircle, CheckCircle, Clock, Copy, Download, Eye, FileDown, FileText, Globe, Languages, Loader2, Search, Settings, Sparkles } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import LogoutButton from "./Logout";
+
 // --- Configuration ---
 // Adjust this URL to where your backend server is running.
-const API_BASE_URL = 'http://localhost:4001/api/scrape'; 
+const API_BASE_URL = 'https://web-scarper-ai.onrender.com/api/scrape'; 
 
 // Supported languages for translation
 const SUPPORTED_LANGUAGES = [
@@ -341,14 +342,16 @@ function Scrappy() {
       });
 
       const data = await response.json();
-      
+      console.log('Batch preview data:', data);
       if (data.success) {
         setResult({
           success: true,
           preview: true,
-          results: data.results,
-          summary: data.summary
+          results: Array.isArray(data.results) ? data.results : [],
+          summary: data.summary || {},
+          processedAt: data.processedAt || null,
         });
+
         showNotification(`Batch preview complete: ${data.summary?.successful || 0}/${data.summary?.total || 0} successful`);
       } else {
         setError(data.error || data.details || 'Batch preview failed');
@@ -778,16 +781,9 @@ function Scrappy() {
                     )}
                   </div>
 
-                  {/* Batch Action Buttons */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <button
-                      onClick={handleBatchPreview}
-                      disabled={loading || !hasValidBatchUrls()}
-                      className="bg-gray-500 hover:bg-gray-600 text-white font-medium py-3 rounded-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                    >
-                      {loading && loadingAction === 'batch-preview' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                      Batch Preview
-                    </button>
+                  {/* Batch Action Buttons - Updated with Preview button */}
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                   
                     <button
                       onClick={handleSubmit}
                       disabled={loading || !hasValidBatchUrls()}
@@ -804,6 +800,17 @@ function Scrappy() {
                       {loading && loadingAction === 'batch-pdf' ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileDown className="w-4 h-4" />}
                       Get Batch PDF
                     </button>
+                    {/* Batch Translation Button */}
+                    {selectedLanguage !== 'en' && geminiApiKey && (
+                      <button
+                        onClick={handleTranslateBatch}
+                        disabled={translating || loading || !result?.results}
+                        className="bg-purple-600 hover:bg-purple-700 text-white font-medium py-3 rounded-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                      >
+                        {translating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Languages className="w-4 h-4" />}
+                        Translate Batch
+                      </button>
+                    )}
                   </div>
                   
                   <div className="text-sm text-gray-500 dark:text-gray-400 text-center">

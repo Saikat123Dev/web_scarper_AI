@@ -12,7 +12,7 @@ const GoogleSignupPage = () => {
     setError('');
 
     try {
-      const result = await fetch('http://localhost:4001/auth/google', {
+      const result = await fetch('https://web-scarper-ai.onrender.com/auth/google', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: response.credential }),

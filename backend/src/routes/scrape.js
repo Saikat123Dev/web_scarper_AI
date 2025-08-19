@@ -3,11 +3,9 @@ import * as cheerio from 'cheerio';
 import { Router } from 'express';
 import PDFDocument from 'pdfkit';
 import { URL } from 'url';
-import archiver from 'archiver';
 
 const router = Router();
 
-// Enhanced user agents for bot detection avoidance
 const userAgents = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -99,7 +97,7 @@ class ContentExtractor {
   // Extract structured content with headings and paragraphs
   extractStructuredContent() {
     const $body = this.$('body').clone();
-    
+
     // Remove unwanted elements
     $body.find(`
       script, style, nav, footer, header, aside, iframe, form,
@@ -257,7 +255,7 @@ class ContentExtractor {
   // Generate plain text from structured content
   generatePlainText(structuredContent) {
     let text = '';
-    
+
     structuredContent.forEach(section => {
       switch (section.type) {
         case 'heading':
@@ -645,7 +643,7 @@ function generateBatchPDF(results) {
   // Content pages
   successfulResults.forEach((result, index) => {
     doc.addPage();
-    
+
     // Article header
     doc.font('Helvetica-Bold')
       .fontSize(20)
@@ -769,12 +767,12 @@ function generateBatchPDF(results) {
         .fontSize(11)
         .fillColor('#333')
         .text(`${index + 1}. ${result.url}`);
-      
+
       doc.font('Helvetica')
         .fontSize(10)
         .fillColor('#cc0000')
         .text(`Error: ${result.error}`, { indent: 20 });
-      
+
       doc.moveDown(0.5);
     });
   }
@@ -950,7 +948,7 @@ router.post('/scrape/batch', async (req, res) => {
     if (format === 'pdf') {
       try {
         const doc = generateBatchPDF(results);
-        
+
         const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
         const filename = `batch-scraped-content-${timestamp}.pdf`;
 
@@ -1207,7 +1205,7 @@ router.get('/health', (req, res) => {
 // Error handling middleware
 router.use((error, req, res, next) => {
   console.error('API Error:', error);
-  
+
   if (error.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({
       success: false,

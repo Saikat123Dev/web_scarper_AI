@@ -1,7 +1,6 @@
-import { AlertCircle, CheckCircle, Clock, Copy, Download, Eye, FileDown, FileText, Globe, Languages, Loader2, Search, Settings, Sparkles } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import LogoutButton from './Logout';
-
+import { AlertCircle, CheckCircle, Clock, Copy, Download, Eye, FileDown, FileText, Globe, Loader2, Search, Sparkles, Languages, Settings } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import LogoutButton from "./Logout"
 // --- Configuration ---
 // Adjust this URL to where your backend server is running.
 const API_BASE_URL = 'http://localhost:4001/api/scrape'; 
@@ -35,7 +34,7 @@ function Scrappy() {
   const [mode, setMode] = useState('single'); // 'single' or 'batch'
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [loadingAction, setLoadingAction] = useState(''); // 'scrape', 'preview', 'pdf', 'translate'
+  const [loadingAction, setLoadingAction] = useState(''); // 'scrape', 'preview', 'pdf', 'translate', 'batch-preview', 'batch-pdf'
   const [stats, setStats] = useState({
     processingTime: 0,
     contentLength: 0
@@ -51,18 +50,19 @@ function Scrappy() {
   const [translations, setTranslations] = useState({});
   const [translating, setTranslating] = useState(false);
 
-  // Load API key from localStorage on component mount
+  // Load API key from memory (not localStorage in artifacts)
   useEffect(() => {
-    const savedApiKey = localStorage.getItem('gemini_api_key');
-    if (savedApiKey) {
-      setGeminiApiKey(savedApiKey);
-    }
+    // In a real environment, this would load from localStorage
+    // const savedApiKey = localStorage.getItem('gemini_api_key');
+    // if (savedApiKey) {
+    //   setGeminiApiKey(savedApiKey);
+    // }
   }, []);
 
-  // Save API key to localStorage when it changes
+  // Save API key to memory (not localStorage in artifacts)
   const saveApiKey = (key) => {
     setGeminiApiKey(key);
-    localStorage.setItem('gemini_api_key', key);
+    // In a real environment: localStorage.setItem('gemini_api_key', key);
     setShowApiKeyInput(false);
     showNotification('API key saved successfully!');
   };
@@ -319,6 +319,51 @@ function Scrappy() {
     setLoadingAction('');
   };
 
+  // New function for batch preview
+  const handleBatchPreview = async () => {
+    const validUrls = batchUrls.filter(url => url.trim() !== '');
+    if (validUrls.length === 0) return;
+    
+    setLoading(true);
+    setLoadingAction('batch-preview');
+    setResult(null);
+    setError('');
+    setTranslations({});
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/preview/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          urls: validUrls,
+          concurrent: Math.min(3, validUrls.length)
+        })
+      });
+
+      const data = await response.json();
+      
+      if (data.success) {
+        setResult({
+          success: true,
+          preview: true,
+          results: data.results,
+          summary: data.summary
+        });
+        showNotification(`Batch preview complete: ${data.summary?.successful || 0}/${data.summary?.total || 0} successful`);
+      } else {
+        setError(data.error || data.details || 'Batch preview failed');
+        showNotification('Batch preview failed', 'error');
+      }
+    } catch (err) {
+      setError('Network error: Could not connect to the server.');
+      showNotification('Network connection failed', 'error');
+      console.error('Batch preview error:', err);
+    }
+
+    setLoading(false);
+    setLoadingAction('');
+  };
+
   const handleDownloadPdf = async () => {
     if (!input || mode !== 'single') return;
 
@@ -364,6 +409,62 @@ function Scrappy() {
         setError('Network error: Could not connect to the server.');
         showNotification('Network connection failed', 'error');
         console.error('PDF download error:', err);
+    }
+
+    setLoading(false);
+    setLoadingAction('');
+  };
+
+  // New function for batch PDF download
+  const handleBatchDownloadPdf = async () => {
+    const validUrls = batchUrls.filter(url => url.trim() !== '');
+    if (validUrls.length === 0) return;
+
+    setLoading(true);
+    setLoadingAction('batch-pdf');
+    setError('');
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/scrape/batch?format=pdf`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              urls: validUrls,
+              concurrent: Math.min(3, validUrls.length)
+            }),
+        });
+
+        if (response.ok) {
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            
+            const disposition = response.headers.get('content-disposition');
+            let filename = `batch-scraped-content-${new Date().getTime()}.pdf`;
+            if (disposition && disposition.indexOf('attachment') !== -1) {
+                const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+                const matches = filenameRegex.exec(disposition);
+                if (matches != null && matches[1]) {
+                    filename = matches[1].replace(/['"]/g, '');
+                }
+            }
+            
+            link.setAttribute('download', filename);
+            document.body.appendChild(link);
+            link.click();
+            link.parentNode.removeChild(link);
+            window.URL.revokeObjectURL(url);
+            showNotification('Batch PDF downloaded successfully!');
+        } else {
+            const errorData = await response.json();
+            setError(errorData.error || errorData.details || 'Batch PDF download failed.');
+            showNotification('Batch PDF download failed', 'error');
+        }
+    } catch (err) {
+        setError('Network error: Could not connect to the server.');
+        showNotification('Network connection failed', 'error');
+        console.error('Batch PDF download error:', err);
     }
 
     setLoading(false);
@@ -457,10 +558,14 @@ function Scrappy() {
     };
   };
 
+  const hasValidBatchUrls = () => {
+    return batchUrls.some(url => url.trim() !== '');
+  };
+
   return (
     <div className="min-h-screen w-full bg-gradient-to-br from-indigo-100 via-purple-50 to-pink-100 dark:from-gray-900 dark:via-purple-900 dark:to-indigo-900 p-4 transition-all duration-300">
+      {/* Notification */}
       <LogoutButton/>
-     
       {notification && (
         <div className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-lg flex items-center gap-2 transition-all duration-300 ${
           notification.type === 'error' 
@@ -662,7 +767,7 @@ function Scrappy() {
                     ))}
                   </div>
                   
-                  <div className="flex gap-3">
+                  <div className="flex gap-3 mb-4">
                     {batchUrls.length < 20 && (
                       <button
                         onClick={addBatchUrl}
@@ -671,13 +776,33 @@ function Scrappy() {
                         + Add URL
                       </button>
                     )}
+                  </div>
+
+                  {/* Batch Action Buttons */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <button
+                      onClick={handleBatchPreview}
+                      disabled={loading || !hasValidBatchUrls()}
+                      className="bg-gray-500 hover:bg-gray-600 text-white font-medium py-3 rounded-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {loading && loadingAction === 'batch-preview' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                      Batch Preview
+                    </button>
                     <button
                       onClick={handleSubmit}
-                      disabled={loading || batchUrls.every(url => !url.trim())}
-                      className="flex-1 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold py-3 rounded-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg flex items-center justify-center gap-2"
+                      disabled={loading || !hasValidBatchUrls()}
+                      className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold py-3 rounded-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-[0.98]"
                     >
-                      {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <FileText className="w-5 h-5" />}
-                      Process Batch
+                      {loading && loadingAction === 'scrape' ? <Loader2 className="w-5 h-5 animate-spin" /> : <FileText className="w-5 h-5" />}
+                      Get Batch JSON
+                    </button>
+                    <button
+                      onClick={handleBatchDownloadPdf}
+                      disabled={loading || !hasValidBatchUrls()}
+                      className="bg-red-500 hover:bg-red-600 text-white font-medium py-3 rounded-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {loading && loadingAction === 'batch-pdf' ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileDown className="w-4 h-4" />}
+                      Get Batch PDF
                     </button>
                   </div>
                   
@@ -908,7 +1033,11 @@ function Scrappy() {
                             {item.success ? (
                               <div className="bg-white dark:bg-gray-700 rounded-lg p-3 max-h-32 overflow-y-auto">
                                 <pre className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300 font-mono">
-                                  {translatedContent.content?.substring(0, 300)}{translatedContent.content?.length > 300 ? '...' : ''}
+                                  {result.preview ? (
+                                    translatedContent.content?.substring(0, 200) + (translatedContent.content?.length > 200 ? '...' : '')
+                                  ) : (
+                                    translatedContent.content?.substring(0, 300) + (translatedContent.content?.length > 300 ? '...' : '')
+                                  )}
                                 </pre>
                               </div>
                             ) : (
@@ -941,6 +1070,11 @@ function Scrappy() {
                                 {translatedContent.error && (
                                   <span className="text-xs text-yellow-600 dark:text-yellow-400">
                                     • Translation Error: {translatedContent.error}
+                                  </span>
+                                )}
+                                {result.preview && item.stats && (
+                                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                                    • Preview ({item.preview?.length || 0} chars)
                                   </span>
                                 )}
                               </div>

@@ -3,22 +3,25 @@ import * as cheerio from 'cheerio';
 import { Router } from 'express';
 import PDFDocument from 'pdfkit';
 import { URL } from 'url';
+import archiver from 'archiver';
 
 const router = Router();
 
-// Essential user agents for bot detection avoidance
+// Enhanced user agents for bot detection avoidance
 const userAgents = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0'
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
 ];
 
-// Essential HTTP client with basic headers and retry logic
+// Enhanced HTTP client with better headers and retry logic
 const createAxiosInstance = (customHeaders = {}) => {
   const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
 
   return axios.create({
-    timeout: 30000, // Increased timeout
+    timeout: 30000,
     maxRedirects: 5,
     headers: {
       'User-Agent': randomUserAgent,
@@ -28,13 +31,17 @@ const createAxiosInstance = (customHeaders = {}) => {
       'DNT': '1',
       'Connection': 'keep-alive',
       'Upgrade-Insecure-Requests': '1',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
       ...customHeaders
     },
     validateStatus: (status) => status >= 200 && status < 400
   });
 };
 
-// Enhanced content extraction class
+// Enhanced content extractor with beautiful formatting
 class ContentExtractor {
   constructor(html, url) {
     this.$ = cheerio.load(html);
@@ -51,11 +58,14 @@ class ContentExtractor {
       '.main-content',
       '#content',
       '.content',
-      '[role="main"]'
+      '[role="main"]',
+      '#main-content',
+      '.story-content',
+      '.text-content'
     ];
   }
 
-  // Extract title using common selectors
+  // Extract title with priority to H1 tags
   extractTitle() {
     const titleSelectors = [
       'h1',
@@ -65,7 +75,10 @@ class ContentExtractor {
       '.post-title',
       '.entry-title',
       '.article-title',
-      '.page-title'
+      '.page-title',
+      '.headline',
+      '.title',
+      '[itemprop="headline"]'
     ];
 
     for (const selector of titleSelectors) {
@@ -83,103 +96,123 @@ class ContentExtractor {
     return 'No title found';
   }
 
-  // Enhanced content extraction with better fallbacks
-  extractContent() {
-    // Create a working copy of the DOM
+  // Extract structured content with headings and paragraphs
+  extractStructuredContent() {
     const $body = this.$('body').clone();
-
+    
     // Remove unwanted elements
     $body.find(`
-      script, style, nav, footer, header, aside, 
-      .advertisement, .ad, .ads, .sidebar, .menu, 
-      .social, .share, .comment, .comments, 
-      .related, .recommended, .popup, .modal,
-      [class*="ad"], [id*="ad"], [class*="sidebar"],
-      [class*="menu"], [class*="nav"]
+      script, style, nav, footer, header, aside, iframe, form,
+      .advertisement, .ad, .ads, .sidebar, .menu, .social, 
+      .share, .comment, .comments, .related, .recommended, 
+      .popup, .modal, [class*="ad"], [id*="ad"], [class*="sidebar"],
+      [class*="menu"], [class*="nav"], [class*="cookie"], [class*="banner"],
+      [role="navigation"], [role="banner"], [role="complementary"]
     `).remove();
 
-    // Try content selectors first
+    // Try to find main content container first
     for (const selector of this.contentSelectors) {
       const element = $body.find(selector);
       if (element.length > 0) {
-        const text = element.text().trim();
-        if (text.length > 200) { // Minimum content threshold
-          return this.cleanContent(text);
-        }
+        return this.extractFromElement(element);
       }
     }
 
-    // Fallback: extract from paragraphs
-    const paragraphs = $body.find('p');
-    if (paragraphs.length > 0) {
-      let combinedText = '';
-      paragraphs.each((i, elem) => {
-        const pText = this.$(elem).text().trim();
-        if (pText.length > 50) {
-          combinedText += pText + '\n\n';
-        }
-      });
-      if (combinedText.length > 200) {
-        return this.cleanContent(combinedText);
-      }
-    }
-
-    // Last resort: body text
-    const bodyText = $body.text().trim();
-    return bodyText.length > 200 ? this.cleanContent(bodyText) : 'No content found';
+    // Fallback to extracting from body
+    return this.extractFromElement($body);
   }
 
-  // Extract structured HTML content for PDF generation
-  extractContentHtml() {
-    const $body = this.$('body').clone();
+  // Extract content from a specific element with structure
+  extractFromElement($element) {
+    const sections = [];
+    let currentSection = { type: 'paragraph', content: '' };
 
-    // Remove unwanted elements
-    $body.find(`
-      script, style, nav, footer, header, aside,
-      .advertisement, .ad, .ads, .sidebar, .menu,
-      .social, .share, .comment, .comments,
-      .related, .recommended, .popup, .modal,
-      [class*="ad"], [id*="ad"]
-    `).remove();
+    // Process all heading and content elements
+    $element.find('h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, pre').each((i, elem) => {
+      const tagName = elem.tagName.toLowerCase();
+      const $elem = this.$(elem);
+      const text = $elem.text().trim();
 
-    // Try to find main content container
-    for (const selector of this.contentSelectors) {
-      const element = $body.find(selector);
-      if (element.length > 0) {
-        const html = element.html();
-        const textLength = element.text().trim().length;
-        if (html && textLength > 200) {
-          return this.cleanHtml(html);
+      if (!text) return;
+
+      if (tagName.startsWith('h')) {
+        // If we have accumulated content in current section, save it
+        if (currentSection.content) {
+          sections.push(currentSection);
+          currentSection = { type: 'paragraph', content: '' };
         }
+
+        // Add heading section
+        const level = parseInt(tagName.substring(1));
+        sections.push({
+          type: 'heading',
+          level: level,
+          content: text
+        });
+      } else if (tagName === 'p') {
+        // Add to current paragraph or start new one if too long
+        if (currentSection.content.length + text.length < 1000) {
+          currentSection.content += (currentSection.content ? '\n\n' : '') + text;
+        } else {
+          if (currentSection.content) {
+            sections.push(currentSection);
+          }
+          currentSection = { type: 'paragraph', content: text };
+        }
+      } else if (tagName === 'ul' || tagName === 'ol') {
+        // Process lists
+        const listItems = [];
+        $elem.find('li').each((liIdx, liElem) => {
+          const liText = this.$(liElem).text().trim();
+          if (liText) listItems.push(liText);
+        });
+
+        if (listItems.length > 0) {
+          sections.push({
+            type: tagName === 'ul' ? 'bullet_list' : 'numbered_list',
+            items: listItems
+          });
+        }
+      } else if (tagName === 'blockquote') {
+        sections.push({
+          type: 'quote',
+          content: text
+        });
+      } else if (tagName === 'pre') {
+        sections.push({
+          type: 'code',
+          content: text
+        });
       }
+    });
+
+    // Add any remaining content
+    if (currentSection.content) {
+      sections.push(currentSection);
     }
 
-    // Fallback: collect paragraphs and headings
-    const contentElements = $body.find('h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote');
-    if (contentElements.length > 0) {
-      let html = '';
-      contentElements.each((i, elem) => {
-        const elementHtml = this.$(elem).toString();
-        const elementText = this.$(elem).text().trim();
-        if (elementText.length > 10) {
-          html += elementHtml + '\n';
-        }
-      });
-      return html ? this.cleanHtml(html) : null;
-    }
-
-    return null;
+    return sections;
   }
 
-  // Extract comprehensive metadata
+  // Extract metadata with additional fields
   extractMetadata() {
-    const metadata = {};
+    const metadata = {
+      description: '',
+      keywords: '',
+      author: '',
+      publishDate: '',
+      language: 'en',
+      siteName: '',
+      image: '',
+      readingTime: 0
+    };
 
     // Description
     metadata.description =
       this.$('meta[name="description"]').attr('content') ||
       this.$('meta[property="og:description"]').attr('content') ||
-      this.$('meta[name="twitter:description"]').attr('content') || '';
+      this.$('meta[name="twitter:description"]').attr('content') ||
+      this.$('meta[name="og:description"]').attr('content') || '';
 
     // Keywords
     metadata.keywords = this.$('meta[name="keywords"]').attr('content') || '';
@@ -188,31 +221,67 @@ class ContentExtractor {
     metadata.author =
       this.$('meta[name="author"]').attr('content') ||
       this.$('meta[property="article:author"]').attr('content') ||
+      this.$('[itemprop="author"]').attr('content') ||
       this.$('.author').first().text().trim() ||
-      this.$('[rel="author"]').first().text().trim() || '';
+      this.$('[rel="author"]').first().text().trim() ||
+      this.$('[itemprop="author"]').first().text().trim() || '';
 
     // Publication date
     metadata.publishDate =
       this.$('meta[property="article:published_time"]').attr('content') ||
       this.$('meta[name="date"]').attr('content') ||
+      this.$('meta[property="published_time"]').attr('content') ||
       this.$('time[datetime]').first().attr('datetime') ||
       this.$('time').first().text().trim() || '';
 
     // Language
     metadata.language =
       this.$('html').attr('lang') ||
-      this.$('meta[http-equiv="content-language"]').attr('content') || 'en';
+      this.$('meta[http-equiv="content-language"]').attr('content') ||
+      'en';
 
     // Site name
     metadata.siteName =
-      this.$('meta[property="og:site_name"]').attr('content') || '';
+      this.$('meta[property="og:site_name"]').attr('content') ||
+      this.$('meta[name="application-name"]').attr('content') || '';
 
     // Image
     metadata.image =
       this.$('meta[property="og:image"]').attr('content') ||
-      this.$('meta[name="twitter:image"]').attr('content') || '';
+      this.$('meta[name="twitter:image"]').attr('content') ||
+      this.$('meta[itemprop="image"]').attr('content') || '';
 
     return metadata;
+  }
+
+  // Generate plain text from structured content
+  generatePlainText(structuredContent) {
+    let text = '';
+    
+    structuredContent.forEach(section => {
+      switch (section.type) {
+        case 'heading':
+          text += `${'#'.repeat(section.level)} ${section.content}\n\n`;
+          break;
+        case 'paragraph':
+          text += `${section.content}\n\n`;
+          break;
+        case 'bullet_list':
+          text += section.items.map(item => `• ${item}`).join('\n') + '\n\n';
+          break;
+        case 'numbered_list':
+          text += section.items.map((item, i) => `${i + 1}. ${item}`).join('\n') + '\n\n';
+          break;
+        case 'quote':
+          text += `> ${section.content}\n\n`;
+          break;
+        case 'code':
+          text += `\`\`\`\n${section.content}\n\`\`\`\n\n`;
+          break;
+      }
+    });
+
+    return text.trim();
   }
 
   // Clean text content
@@ -220,29 +289,12 @@ class ContentExtractor {
     return text
       .replace(/\s+/g, ' ')
       .replace(/[\r\n]+/g, ' ')
-      .trim();
-  }
-
-  // Clean extracted content
-  cleanContent(content) {
-    return content
-      .replace(/\s+/g, ' ')           // Multiple spaces to single
-      .replace(/\n\s*\n/g, '\n\n')    // Multiple newlines to double
-      .replace(/\t/g, ' ')            // Tabs to spaces
-      .trim()
-      .substring(0, 50000);           // Reasonable content length limit
-  }
-
-  // Clean HTML content
-  cleanHtml(html) {
-    return html
-      .replace(/\s+/g, ' ')
-      .replace(/>\s+</g, '><')
+      .replace(/[^\w\s.,!?\-'"()]/g, '')
       .trim();
   }
 }
 
-// Enhanced scraper with better error handling
+// Enhanced web scraper with beautiful formatting
 class WebScraper {
   constructor() {
     this.maxRetries = 3;
@@ -259,15 +311,23 @@ class WebScraper {
         const html = await this.fetchWithRetry(url, attempt);
         const extractor = new ContentExtractor(html, url);
 
+        const structuredContent = extractor.extractStructuredContent();
+        const plainText = extractor.generatePlainText(structuredContent);
+        const metadata = extractor.extractMetadata();
+
+        // Calculate reading time (200 words per minute)
+        const wordCount = this.countWords(plainText);
+        metadata.readingTime = Math.ceil(wordCount / 200);
+
         const result = {
           url: url,
           title: extractor.extractTitle(),
-          content: extractor.extractContent(),
-          contentHtml: extractor.extractContentHtml(),
-          metadata: extractor.extractMetadata(),
+          content: plainText,
+          structuredContent: structuredContent,
+          metadata: metadata,
           timestamp: new Date().toISOString(),
           success: true,
-          wordCount: this.countWords(extractor.extractContent()),
+          wordCount: wordCount,
           scrapingAttempts: attempt
         };
 
@@ -365,10 +425,6 @@ class WebScraper {
       batchResults.forEach((result, index) => {
         if (result.status === 'fulfilled') {
           const scrapedData = result.value;
-          // Remove HTML content for batch operations to save memory
-          if (scrapedData.success) {
-            delete scrapedData.contentHtml;
-          }
           results.push(scrapedData);
         } else {
           results.push({
@@ -391,13 +447,14 @@ class WebScraper {
   }
 }
 
-// ===================================================================
-// START OF CORRECTED CODE
-// ===================================================================
+// Enhanced PDF generation with beautiful formatting
+function generatePDF(doc, title, structuredContent, metadata) {
+  // Set document metadata
+  doc.info['Title'] = title;
+  if (metadata.author) doc.info['Author'] = metadata.author;
+  if (metadata.publishDate) doc.info['CreationDate'] = new Date(metadata.publishDate);
 
-// Enhanced PDF generation (Corrected)
-function generatePDF(doc, title, content, metadata) {
-  // --- This part is the same as before ---
+  // Title page
   doc.font('Helvetica-Bold')
     .fontSize(24)
     .text(title, { align: 'center' });
@@ -417,31 +474,312 @@ function generatePDF(doc, title, content, metadata) {
 
   doc.moveDown(2);
 
-  doc.font('Helvetica')
-    .fontSize(11)
-    .text(content, {
-      width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
-      align: 'left',
-      lineGap: 3
-    });
+  // Add source URL
+  doc.fontSize(10)
+    .fillColor('#666')
+    .text(`Source: ${metadata.url}`, { align: 'center' });
 
-  // --- THIS IS THE CORRECTED PART ---
-  // Add footer with the correct page range logic
+  // Add new page for content
+  doc.addPage();
+
+  // Process structured content
+  structuredContent.forEach(section => {
+    switch (section.type) {
+      case 'heading':
+        const headingSize = 20 - (section.level * 2);
+        doc.font('Helvetica-Bold')
+          .fontSize(headingSize)
+          .fillColor('#333')
+          .text(section.content, { paragraphGap: 5 });
+        doc.moveDown(0.5);
+        break;
+
+      case 'paragraph':
+        doc.font('Helvetica')
+          .fontSize(11)
+          .fillColor('#333')
+          .text(section.content, {
+            align: 'left',
+            lineGap: 3,
+            paragraphGap: 8,
+            indent: 10
+          });
+        doc.moveDown(0.5);
+        break;
+
+      case 'bullet_list':
+        doc.font('Helvetica')
+          .fontSize(11)
+          .fillColor('#333');
+        section.items.forEach(item => {
+          doc.text(`• ${item}`, {
+            indent: 20,
+            lineGap: 3,
+            paragraphGap: 5
+          });
+        });
+        doc.moveDown(0.5);
+        break;
+
+      case 'numbered_list':
+        doc.font('Helvetica')
+          .fontSize(11)
+          .fillColor('#333');
+        section.items.forEach((item, i) => {
+          doc.text(`${i + 1}. ${item}`, {
+            indent: 20,
+            lineGap: 3,
+            paragraphGap: 5
+          });
+        });
+        doc.moveDown(0.5);
+        break;
+
+      case 'quote':
+        doc.font('Helvetica-Italic')
+          .fontSize(11)
+          .fillColor('#555')
+          .text(`"${section.content}"`, {
+            align: 'center',
+            indent: 30,
+            lineGap: 5,
+            paragraphGap: 10
+          });
+        doc.moveDown(1);
+        break;
+
+      case 'code':
+        doc.font('Courier')
+          .fontSize(10)
+          .fillColor('#333')
+          .text(section.content, {
+            align: 'left',
+            indent: 20,
+            lineGap: 3,
+            paragraphGap: 5
+          });
+        doc.moveDown(1);
+        break;
+    }
+  });
+
+  // Add footer with page numbers
   const range = doc.bufferedPageRange();
   const pageCount = range.count;
 
   for (let i = range.start; i < range.start + pageCount; i++) {
     doc.switchToPage(i);
-
     const pageNumber = i + 1;
 
+    // Footer line
+    doc.strokeColor('#ccc')
+      .lineWidth(0.5)
+      .moveTo(72, doc.page.height - 40)
+      .lineTo(doc.page.width - 72, doc.page.height - 40)
+      .stroke();
+
+    // Footer text
     doc.fontSize(8)
-      .text(`Generated on ${new Date().toLocaleDateString()} • Page ${pageNumber} of ${pageCount}`,
-        doc.page.margins.left, doc.page.height - 50, {
-        width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
-        align: 'center'
-      });
+      .fillColor('#666')
+      .text(
+        `Page ${pageNumber} of ${pageCount} • Generated on ${new Date().toLocaleDateString()}`,
+        doc.page.margins.left,
+        doc.page.height - 30,
+        {
+          width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
+          align: 'center'
+        }
+      );
   }
+}
+
+// Batch PDF generator for multiple URLs
+function generateBatchPDF(results) {
+  const doc = new PDFDocument({
+    margins: { top: 50, bottom: 60, left: 72, right: 72 },
+    bufferPages: true
+  });
+
+  // Cover page
+  doc.font('Helvetica-Bold')
+    .fontSize(28)
+    .text('Batch Scraped Content', { align: 'center' });
+
+  doc.moveDown(2);
+
+  doc.font('Helvetica')
+    .fontSize(14)
+    .text(`Generated on: ${new Date().toLocaleDateString()}`, { align: 'center' });
+
+  doc.moveDown(1);
+
+  const successfulResults = results.filter(r => r.success);
+  const failedResults = results.filter(r => !r.success);
+
+  doc.fontSize(12)
+    .text(`Total URLs: ${results.length}`, { align: 'center' })
+    .text(`Successful: ${successfulResults.length}`, { align: 'center' })
+    .text(`Failed: ${failedResults.length}`, { align: 'center' });
+
+  // Table of contents
+  if (successfulResults.length > 0) {
+    doc.addPage();
+    doc.font('Helvetica-Bold')
+      .fontSize(18)
+      .text('Table of Contents', { align: 'center' });
+
+    doc.moveDown(1);
+
+    successfulResults.forEach((result, index) => {
+      doc.font('Helvetica')
+        .fontSize(11)
+        .text(`${index + 1}. ${result.title}`, { indent: 20 });
+      doc.fontSize(9)
+        .fillColor('#666')
+        .text(`   ${result.url}`, { indent: 20 });
+      doc.fillColor('#333');
+      doc.moveDown(0.3);
+    });
+  }
+
+  // Content pages
+  successfulResults.forEach((result, index) => {
+    doc.addPage();
+    
+    // Article header
+    doc.font('Helvetica-Bold')
+      .fontSize(20)
+      .fillColor('#333')
+      .text(`${index + 1}. ${result.title}`);
+
+    doc.moveDown(0.5);
+
+    doc.font('Helvetica')
+      .fontSize(10)
+      .fillColor('#666')
+      .text(`Source: ${result.url}`);
+
+    doc.fontSize(10)
+      .text(`Word Count: ${result.wordCount || 0} | Scraped: ${new Date(result.timestamp).toLocaleDateString()}`);
+
+    doc.moveDown(1);
+
+    // Add separator line
+    doc.strokeColor('#ccc')
+      .lineWidth(1)
+      .moveTo(72, doc.y)
+      .lineTo(doc.page.width - 72, doc.y)
+      .stroke();
+
+    doc.moveDown(1);
+
+    // Content
+    if (result.structuredContent) {
+      result.structuredContent.forEach(section => {
+        switch (section.type) {
+          case 'heading':
+            const headingSize = Math.max(12, 18 - (section.level * 2));
+            doc.font('Helvetica-Bold')
+              .fontSize(headingSize)
+              .fillColor('#333')
+              .text(section.content, { paragraphGap: 5 });
+            doc.moveDown(0.5);
+            break;
+
+          case 'paragraph':
+            doc.font('Helvetica')
+              .fontSize(10)
+              .fillColor('#333')
+              .text(section.content, {
+                align: 'left',
+                lineGap: 2,
+                paragraphGap: 6,
+                indent: 10
+              });
+            doc.moveDown(0.3);
+            break;
+
+          case 'bullet_list':
+            doc.font('Helvetica')
+              .fontSize(10)
+              .fillColor('#333');
+            section.items.forEach(item => {
+              doc.text(`• ${item}`, {
+                indent: 20,
+                lineGap: 2,
+                paragraphGap: 3
+              });
+            });
+            doc.moveDown(0.3);
+            break;
+
+          case 'numbered_list':
+            doc.font('Helvetica')
+              .fontSize(10)
+              .fillColor('#333');
+            section.items.forEach((item, i) => {
+              doc.text(`${i + 1}. ${item}`, {
+                indent: 20,
+                lineGap: 2,
+                paragraphGap: 3
+              });
+            });
+            doc.moveDown(0.3);
+            break;
+
+          case 'quote':
+            doc.font('Helvetica-Italic')
+              .fontSize(10)
+              .fillColor('#555')
+              .text(`"${section.content}"`, {
+                align: 'center',
+                indent: 30,
+                lineGap: 3,
+                paragraphGap: 6
+              });
+            doc.moveDown(0.5);
+            break;
+        }
+      });
+    } else {
+      // Fallback to plain content
+      doc.font('Helvetica')
+        .fontSize(10)
+        .fillColor('#333')
+        .text(result.content || 'No content available', {
+          align: 'left',
+          lineGap: 2,
+          paragraphGap: 6
+        });
+    }
+  });
+
+  // Failed URLs summary
+  if (failedResults.length > 0) {
+    doc.addPage();
+    doc.font('Helvetica-Bold')
+      .fontSize(18)
+      .fillColor('#cc0000')
+      .text('Failed URLs', { align: 'center' });
+
+    doc.moveDown(1);
+
+    failedResults.forEach((result, index) => {
+      doc.font('Helvetica-Bold')
+        .fontSize(11)
+        .fillColor('#333')
+        .text(`${index + 1}. ${result.url}`);
+      
+      doc.font('Helvetica')
+        .fontSize(10)
+        .fillColor('#cc0000')
+        .text(`Error: ${result.error}`, { indent: 20 });
+      
+      doc.moveDown(0.5);
+    });
+  }
+
+  return doc;
 }
 
 // ROUTES
@@ -488,11 +826,12 @@ router.post('/scrape', async (req, res) => {
     if (format === 'pdf') {
       try {
         const doc = new PDFDocument({
-          margins: { top: 50, bottom: 60, left: 72, right: 72 } // Increased bottom margin for footer
+          margins: { top: 50, bottom: 60, left: 72, right: 72 },
+          bufferPages: true
         });
 
         const filename = (result.title || 'scraped-content')
-          .replace(/[^a-z0-9\s]/gi, '')
+          .replace(/[^a-z0-9\s-]/gi, '')
           .replace(/\s+/g, '_')
           .toLowerCase()
           .substring(0, 50);
@@ -501,20 +840,32 @@ router.post('/scrape', async (req, res) => {
         res.setHeader('Content-Disposition', `attachment; filename="${filename}.pdf"`);
 
         doc.pipe(res);
-        generatePDF(doc, result.title, result.content, result.metadata);
+        generatePDF(doc, result.title, result.structuredContent, {
+          ...result.metadata,
+          url: result.url
+        });
         doc.end();
 
       } catch (pdfError) {
         console.error('PDF generation error:', pdfError);
-        // Simply end the response. Don't try to send JSON.
-        res.end();
+        res.status(500).json({
+          success: false,
+          error: 'PDF generation failed',
+          message: pdfError.message
+        });
       }
     } else {
       // JSON format (default)
-      delete result.contentHtml; // Remove HTML to keep response clean
       return res.json({
         success: true,
-        data: result,
+        data: {
+          url: result.url,
+          title: result.title,
+          content: result.content,
+          metadata: result.metadata,
+          wordCount: result.wordCount,
+          readingTime: result.metadata.readingTime
+        },
         stats: {
           contentLength: result.content.length,
           wordCount: result.wordCount,
@@ -533,13 +884,182 @@ router.post('/scrape', async (req, res) => {
   }
 });
 
-// ===================================================================
-// END OF CORRECTED CODE
-// ===================================================================
-
-
-// Batch scraping endpoint
+// Batch scraping endpoint with full content
 router.post('/scrape/batch', async (req, res) => {
+  const { urls, concurrent = 2 } = req.body;
+  const { format } = req.query;
+
+  if (!urls || !Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'URLs array is required',
+      example: { urls: ['https://example1.com', 'https://example2.com'] }
+    });
+  }
+
+  if (urls.length > 20) {
+    return res.status(400).json({
+      success: false,
+      error: 'Maximum 20 URLs allowed per batch',
+      provided: urls.length
+    });
+  }
+
+  if (concurrent > 5 || concurrent < 1) {
+    return res.status(400).json({
+      success: false,
+      error: 'Concurrent value must be between 1 and 5',
+      provided: concurrent
+    });
+  }
+
+  // Validate all URLs
+  const invalidUrls = [];
+  urls.forEach((url, index) => {
+    try {
+      new URL(url);
+    } catch (error) {
+      invalidUrls.push({ index, url, error: 'Invalid URL format' });
+    }
+  });
+
+  if (invalidUrls.length > 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid URLs found',
+      invalidUrls: invalidUrls
+    });
+  }
+
+  try {
+    const scraper = new WebScraper();
+    const results = await scraper.scrapeMultipleUrls(urls, concurrent);
+
+    const stats = results.reduce((acc, result) => {
+      if (result.success) {
+        acc.successful++;
+        acc.totalWords += result.wordCount || 0;
+        acc.totalContent += result.content ? result.content.length : 0;
+      } else {
+        acc.failed++;
+      }
+      return acc;
+    }, { successful: 0, failed: 0, totalWords: 0, totalContent: 0 });
+
+    // PDF format requested
+    if (format === 'pdf') {
+      try {
+        const doc = generateBatchPDF(results);
+        
+        const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+        const filename = `batch-scraped-content-${timestamp}.pdf`;
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+        doc.pipe(res);
+        doc.end();
+
+      } catch (pdfError) {
+        console.error('Batch PDF generation error:', pdfError);
+        return res.status(500).json({
+          success: false,
+          error: 'Batch PDF generation failed',
+          message: pdfError.message
+        });
+      }
+    } else {
+      // JSON format (default)
+      return res.json({
+        success: true,
+        summary: {
+          total: results.length,
+          successful: stats.successful,
+          failed: stats.failed,
+          totalWords: stats.totalWords,
+          totalContentLength: stats.totalContent
+        },
+        results: results.map(r => ({
+          url: r.url,
+          title: r.title,
+          content: r.content,
+          wordCount: r.wordCount,
+          success: r.success,
+          error: r.error,
+          timestamp: r.timestamp
+        })),
+        processedAt: new Date().toISOString()
+      });
+    }
+
+  } catch (error) {
+    console.error('Batch scraping error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Batch scraping failed',
+      message: error.message
+    });
+  }
+});
+
+// Preview endpoint for single URL
+router.post('/preview', async (req, res) => {
+  const { url } = req.body;
+
+  if (!url) {
+    return res.status(400).json({
+      success: false,
+      error: 'URL is required'
+    });
+  }
+
+  try {
+    new URL(url);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid URL format'
+    });
+  }
+
+  try {
+    const scraper = new WebScraper();
+    const result = await scraper.scrapeUrl(url);
+
+    if (!result.success) {
+      return res.status(422).json({
+        success: false,
+        error: 'Preview failed',
+        details: result.error
+      });
+    }
+
+    return res.json({
+      success: true,
+      url: result.url,
+      title: result.title,
+      preview: result.content.substring(0, 800) + (result.content.length > 800 ? '...' : ''),
+      metadata: result.metadata,
+      stats: {
+        fullContentLength: result.content.length,
+        wordCount: result.wordCount,
+        readingTime: result.metadata.readingTime
+      },
+      extractedAt: result.timestamp
+    });
+
+  } catch (error) {
+    console.error('Preview error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Preview failed',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Batch preview endpoint
+router.post('/preview/batch', async (req, res) => {
   const { urls, concurrent = 2 } = req.body;
 
   if (!urls || !Array.isArray(urls) || urls.length === 0) {
@@ -599,6 +1119,32 @@ router.post('/scrape/batch', async (req, res) => {
       return acc;
     }, { successful: 0, failed: 0, totalWords: 0, totalContent: 0 });
 
+    // Transform results for preview (truncated content)
+    const previewResults = results.map(result => {
+      if (result.success) {
+        return {
+          url: result.url,
+          title: result.title,
+          preview: result.content ? result.content.substring(0, 500) + (result.content.length > 500 ? '...' : '') : '',
+          wordCount: result.wordCount,
+          success: result.success,
+          timestamp: result.timestamp,
+          stats: {
+            fullContentLength: result.content ? result.content.length : 0,
+            readingTime: result.metadata ? result.metadata.readingTime : 0
+          }
+        };
+      } else {
+        return {
+          url: result.url,
+          error: result.error,
+          success: result.success,
+          timestamp: result.timestamp,
+          scrapingAttempts: result.scrapingAttempts
+        };
+      }
+    });
+
     return res.json({
       success: true,
       summary: {
@@ -608,71 +1154,15 @@ router.post('/scrape/batch', async (req, res) => {
         totalWords: stats.totalWords,
         totalContentLength: stats.totalContent
       },
-      results: results,
+      results: previewResults,
       processedAt: new Date().toISOString()
     });
 
   } catch (error) {
-    console.error('Batch scraping error:', error);
+    console.error('Batch preview error:', error);
     return res.status(500).json({
       success: false,
-      error: 'Batch scraping failed',
-      message: error.message
-    });
-  }
-});
-
-// Preview endpoint
-router.post('/preview', async (req, res) => {
-  const { url } = req.body;
-
-  if (!url) {
-    return res.status(400).json({
-      success: false,
-      error: 'URL is required'
-    });
-  }
-
-  try {
-    new URL(url);
-  } catch (error) {
-    return res.status(400).json({
-      success: false,
-      error: 'Invalid URL format'
-    });
-  }
-
-  try {
-    const scraper = new WebScraper();
-    const result = await scraper.scrapeUrl(url);
-
-    if (!result.success) {
-      return res.status(422).json({
-        success: false,
-        error: 'Preview failed',
-        details: result.error
-      });
-    }
-
-    return res.json({
-      success: true,
-      url: result.url,
-      title: result.title,
-      preview: result.content.substring(0, 800) + (result.content.length > 800 ? '...' : ''),
-      metadata: result.metadata,
-      stats: {
-        fullContentLength: result.content.length,
-        wordCount: result.wordCount,
-        hasHtmlContent: !!result.contentHtml
-      },
-      extractedAt: result.timestamp
-    });
-
-  } catch (error) {
-    console.error('Preview error:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Preview failed',
+      error: 'Batch preview failed',
       message: error.message
     });
   }
@@ -682,31 +1172,54 @@ router.post('/preview', async (req, res) => {
 router.get('/health', (req, res) => {
   res.json({
     status: '✅ Web Scraper API is running',
-    version: '2.0.0',
+    version: '3.1.0',
     features: [
+      'Beautifully formatted content extraction',
+      'Structured content with headings, paragraphs, lists',
+      'Enhanced PDF generation with proper formatting',
       'Single URL scraping (JSON/PDF)',
       'Batch URL scraping (up to 20 URLs)',
-      'Content preview',
+      'Batch PDF generation with table of contents',
+      'Content preview (single & batch)',
       'Comprehensive metadata extraction',
+      'Reading time estimation',
       'Enhanced error handling & retries',
       'Rate limiting with configurable concurrency',
-      'User agent rotation',
-      'PDF generation with proper formatting',
-      'Word count and content statistics'
+      'User agent rotation'
     ],
     endpoints: {
-      scrape: 'POST /scrape - Scrape single URL',
-      batch: 'POST /scrape/batch - Scrape multiple URLs',
+      scrape: 'POST /scrape - Scrape single URL (add ?format=pdf for PDF)',
+      batchScrape: 'POST /scrape/batch - Scrape multiple URLs (add ?format=pdf for PDF)',
       preview: 'POST /preview - Get content preview',
+      batchPreview: 'POST /preview/batch - Get batch content preview',
       health: 'GET /health - Health check'
     },
     limits: {
       batchSize: 20,
       maxConcurrent: 5,
-      contentLimit: '50KB',
-      timeout: '30s'
+      contentLimit: '50KB per URL',
+      timeout: '30s per URL'
     },
     timestamp: new Date().toISOString()
+  });
+});
+
+// Error handling middleware
+router.use((error, req, res, next) => {
+  console.error('API Error:', error);
+  
+  if (error.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({
+      success: false,
+      error: 'Content too large',
+      message: 'The scraped content exceeds the maximum allowed size'
+    });
+  }
+
+  return res.status(500).json({
+    success: false,
+    error: 'Internal server error',
+    message: error.message
   });
 });
 

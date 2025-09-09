@@ -9,7 +9,7 @@
     "build": "tsc",
     "start": "node src/index.js",
     "lint": "eslint . --ext .ts",
-    "postinstall": "playwright install --with-deps chromium"
+    "postinstall": "playwright install  chromium"
   },
   "dependencies": {
     "@google/generative-ai": "^0.5.0",

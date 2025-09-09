@@ -9,7 +9,7 @@
     "build": "echo \"No build step needed for plain JS\"",
     "start": "node src/index.js",
     "lint": "eslint . --ext .ts",
-    "postinstall": "playwright install chromium"
+    "postinstall": "npx playwright install chromium --install-dir=.vercel/cache/playwright"
   },
   "dependencies": {
     "@google/generative-ai": "^0.5.0",

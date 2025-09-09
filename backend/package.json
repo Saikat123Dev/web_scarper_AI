@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "nodemon src/index.js",
-    "build": "tsc",
+    "build": "echo 'No build step needed for plain JS",
     "start": "node src/index.js",
     "lint": "eslint . --ext .ts",
     "postinstall": "playwright install  chromium"

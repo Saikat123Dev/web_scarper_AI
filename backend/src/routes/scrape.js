@@ -292,6 +292,53 @@ class ContentExtractor {
   }
 }
 
+// Optional dynamic rendering toggle (set ENABLE_BROWSER_RENDER=true in env and install playwright)
+const ENABLE_BROWSER_RENDER = true
+let playwrightChromium = null; // lazy loaded
+let PLAYWRIGHT_AVAILABLE = false;
+
+console.log(`[Scraper] ENABLE_BROWSER_RENDER env var: "${process.env.ENABLE_BROWSER_RENDER}"`);
+
+(async () => {
+  if (ENABLE_BROWSER_RENDER) {
+    try {
+      const pw = await import('playwright');
+      playwrightChromium = pw.chromium;
+      PLAYWRIGHT_AVAILABLE = true;
+      console.log('[Scraper] Dynamic rendering enabled. Playwright loaded.');
+    } catch (e) {
+      console.warn('[Scraper] ENABLE_BROWSER_RENDER=true but Playwright not installed. Run: npm install playwright && npx playwright install chromium');
+      console.warn('Error:', e.message);
+    }
+  } else {
+    console.log('[Scraper] Dynamic rendering disabled (ENABLE_BROWSER_RENDER=false).');
+  }
+})();
+async function getRenderedHtml(url) {
+  if (!ENABLE_BROWSER_RENDER) { console.log('[Scraper] Dynamic render skipped (flag disabled)'); return null; }
+  if (!PLAYWRIGHT_AVAILABLE) { console.log('[Scraper] Dynamic render skipped (Playwright missing)'); return null; }
+  try {
+    const browser = await playwrightChromium.launch({ headless: true });
+    const context = await browser.newContext({ userAgent: userAgents[Math.floor(Math.random() * userAgents.length)] });
+    const page = await context.newPage();
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+    // Wait for common content selectors OR timeout
+    const sel = 'main, article, h1, #content, #root, #__next, div[role="main"], [data-reactroot]';
+    await Promise.race([
+      page.waitForSelector(sel, { timeout: 8000 }).catch(() => { }),
+      page.waitForTimeout(4000)
+    ]);
+    // Give frameworks a bit more time to hydrate
+    await page.waitForTimeout(1000);
+    const html = await page.content();
+    await browser.close();
+    return html;
+  } catch (e) {
+    console.warn('Dynamic render failed:', e.message);
+    return null;
+  }
+}
+
 // Enhanced web scraper with beautiful formatting
 class WebScraper {
   constructor() {
@@ -301,46 +348,44 @@ class WebScraper {
 
   async scrapeUrl(url) {
     let lastError = null;
-
+    let usedDynamic = false;
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
-        console.log(`Scraping attempt ${attempt}/${this.maxRetries}: ${url}`);
-
-        const html = await this.fetchWithRetry(url, attempt);
-        const extractor = new ContentExtractor(html, url);
-
-        const structuredContent = extractor.extractStructuredContent();
-        const plainText = extractor.generatePlainText(structuredContent);
-        const metadata = extractor.extractMetadata();
-
-        // Calculate reading time (200 words per minute)
+        console.log(`Scraping attempt ${attempt}/${this.maxRetries}: ${url}${usedDynamic ? ' (dynamic)' : ''}`);
+        let html = await this.fetchWithRetry(url, attempt);
+        let extractor = new ContentExtractor(html, url);
+        let structuredContent = extractor.extractStructuredContent();
+        let plainText = extractor.generatePlainText(structuredContent);
+        let metadata = extractor.extractMetadata();
+        const bodyTextLen = extractor.$('body').text().replace(/\s+/g, ' ').trim().length;
+        const spaIndicators = extractor.$('#root, #__next, div#app, div#__nuxt, [data-reactroot]').length > 0;
+        const tooShort = !plainText || plainText.length < 150 || bodyTextLen < 350 || structuredContent.length === 0;
+        if (!usedDynamic && (tooShort || spaIndicators) && ENABLE_BROWSER_RENDER && PLAYWRIGHT_AVAILABLE) {
+          console.log(`[Scraper] Sparse static HTML (plainLen=${plainText.length}, bodyLen=${bodyTextLen}, sections=${structuredContent.length}) -> trying dynamic render`);
+          const rendered = await getRenderedHtml(url);
+          if (rendered) {
+            usedDynamic = true;
+            extractor = new ContentExtractor(rendered, url);
+            structuredContent = extractor.extractStructuredContent();
+            plainText = extractor.generatePlainText(structuredContent);
+            metadata = extractor.extractMetadata();
+            console.log(`[Scraper] Dynamic render result: plainLen=${plainText.length}, sections=${structuredContent.length}`);
+          } else {
+            console.log('[Scraper] Dynamic render returned null');
+          }
+        }
         const wordCount = this.countWords(plainText);
         metadata.readingTime = Math.ceil(wordCount / 200);
-
-        const result = {
-          url: url,
-          title: extractor.extractTitle(),
-          content: plainText,
-          structuredContent: structuredContent,
-          metadata: metadata,
-          timestamp: new Date().toISOString(),
-          success: true,
-          wordCount: wordCount,
-          scrapingAttempts: attempt
-        };
-
-        // Validate extracted content
-        if (!result.content || result.content === 'No content found' || result.content.length < 100) {
+        const result = { url, title: extractor.extractTitle(), content: plainText, structuredContent, metadata, timestamp: new Date().toISOString(), success: true, wordCount, scrapingAttempts: attempt, dynamicRendered: usedDynamic };
+        const minLen = usedDynamic ? 40 : 100;
+        if (!result.content || result.content.length < minLen) {
           throw new Error('Insufficient content extracted - content too short or empty');
         }
-
-        console.log(`✅ Successfully scraped: ${url} (${result.wordCount} words)`);
+        console.log(`✅ Successfully scraped: ${url} (${result.wordCount} words) dynamic=${usedDynamic}`);
         return result;
-
       } catch (error) {
         lastError = error;
         console.log(`❌ Attempt ${attempt} failed for ${url}: ${error.message}`);
-
         if (attempt < this.maxRetries) {
           const delay = this.retryDelay * attempt;
           console.log(`⏳ Waiting ${delay}ms before retry...`);
@@ -348,14 +393,7 @@ class WebScraper {
         }
       }
     }
-
-    return {
-      url: url,
-      error: lastError?.message || 'Unknown error',
-      success: false,
-      timestamp: new Date().toISOString(),
-      scrapingAttempts: this.maxRetries
-    };
+    return { url, error: lastError?.message || 'Unknown error', success: false, timestamp: new Date().toISOString(), scrapingAttempts: this.maxRetries, dynamicRendered: usedDynamic };
   }
 
   // Enhanced fetch with multiple strategies
@@ -1171,6 +1209,8 @@ router.get('/health', (req, res) => {
   res.json({
     status: '✅ Web Scraper API is running',
     version: '3.1.0',
+    dynamicRendering: ENABLE_BROWSER_RENDER ? 'enabled' : 'disabled',
+    dynamicHint: 'Set ENABLE_BROWSER_RENDER=true and install playwright for JS-heavy sites',
     features: [
       'Beautifully formatted content extraction',
       'Structured content with headings, paragraphs, lists',

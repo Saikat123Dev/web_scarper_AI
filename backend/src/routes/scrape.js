@@ -39,7 +39,7 @@ const createAxiosInstance = (customHeaders = {}) => {
   });
 };
 
-// Enhanced content extractor with beautiful formatting
+
 class ContentExtractor {
   constructor(html, url) {
     this.$ = cheerio.load(html);
@@ -534,8 +534,8 @@ function generatePDF(doc, title, structuredContent, metadata) {
         break;
 
       case 'quote':
-        doc.font('Helvetica-Italic')
-          .fontSize(11)
+        try { doc.font('Helvetica-Oblique'); } catch (e) { doc.font('Helvetica'); }
+        doc.fontSize(11)
           .fillColor('#555')
           .text(`"${section.content}"`, {
             align: 'center',
@@ -726,8 +726,8 @@ function generateBatchPDF(results) {
             break;
 
           case 'quote':
-            doc.font('Helvetica-Italic')
-              .fontSize(10)
+            try { doc.font('Helvetica-Oblique'); } catch (e) { doc.font('Helvetica'); }
+            doc.fontSize(10)
               .fillColor('#555')
               .text(`"${section.content}"`, {
                 align: 'center',

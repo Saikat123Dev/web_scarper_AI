@@ -4,7 +4,7 @@ import LogoutButton from "./Logout";
 
 // --- Configuration ---
 // Adjust this URL to where your backend server is running.
-const API_BASE_URL = 'https://web-scarper-ai.onrender.com/api/scrape'; 
+const API_BASE_URL = 'http://localhost:4001/api/scrape'; 
 
 // Supported languages for translation
 const SUPPORTED_LANGUAGES = [
@@ -53,22 +53,22 @@ function Scrappy() {
 
   // Load API key from memory (not localStorage in artifacts)
   useEffect(() => {
-    // In a real environment, this would load from localStorage
-    // const savedApiKey = localStorage.getItem('gemini_api_key');
-    // if (savedApiKey) {
-    //   setGeminiApiKey(savedApiKey);
-    // }
+    // Automatically load from environment variable (Vite exposes import.meta.env)
+    const envKey = import.meta.env.VITE_GEMINI_API_KEY;
+    if (envKey && typeof envKey === 'string' && envKey.trim()) {
+      setGeminiApiKey(envKey.trim());
+    }
   }, []);
 
-  // Save API key to memory (not localStorage in artifacts)
+ 
   const saveApiKey = (key) => {
+    // No longer needed when using env variable, keep for backward compatibility if modal still used
     setGeminiApiKey(key);
-    // In a real environment: localStorage.setItem('gemini_api_key', key);
     setShowApiKeyInput(false);
     showNotification('API key saved successfully!');
   };
 
-  // Show notification helper
+  
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 3000);
@@ -581,7 +581,7 @@ function Scrappy() {
       )}
 
       {/* API Key Configuration Modal */}
-      {showApiKeyInput && (
+      {showApiKeyInput && !geminiApiKey && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md">
             <div className="flex items-center gap-3 mb-4">
@@ -589,11 +589,7 @@ function Scrappy() {
               <h3 className="text-lg font-bold text-gray-900 dark:text-white">Configure Gemini API Key</h3>
             </div>
             <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-              Enter your Google Gemini API key to enable multilingual translation features. 
-              Get your free API key from{' '}
-              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                Google AI Studio
-              </a>
+              Environment variable preferred. You can still paste a temporary key below (persists only in memory).
             </p>
             <input
               type="password"
@@ -693,7 +689,7 @@ function Scrappy() {
                   }`}
                 >
                   <Settings className="w-4 h-4" />
-                  {geminiApiKey ? 'API Key Configured' : 'Configure API Key'}
+                  {geminiApiKey ? 'API Key Loaded' : 'Configure API Key'}
                 </button>
               </div>
 

@@ -1,3 +1,4 @@
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { Router } from 'express';
@@ -5,6 +6,9 @@ import PDFDocument from 'pdfkit';
 import { URL } from 'url';
 
 const router = Router();
+
+// Initialize Gemini AI
+const genAI = "AIzaSyD7LeM9h-TjfzuHl2K-Zy2YNyVpTyO59yE" ? new GoogleGenerativeAI("AIzaSyD7LeM9h-TjfzuHl2K-Zy2YNyVpTyO59yE") : null;
 
 const userAgents = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -94,99 +98,279 @@ class ContentExtractor {
     return 'No title found';
   }
 
-  // Extract structured content with headings and paragraphs
+  // Extract structured content with headings and paragraphs - AGGRESSIVE EXTRACTION
   extractStructuredContent() {
     const $body = this.$('body').clone();
 
-    // Remove unwanted elements
-    $body.find(`
-      script, style, nav, footer, header, aside, iframe, form,
-      .advertisement, .ad, .ads, .sidebar, .menu, .social, 
-      .share, .comment, .comments, .related, .recommended, 
-      .popup, .modal, [class*="ad"], [id*="ad"], [class*="sidebar"],
-      [class*="menu"], [class*="nav"], [class*="cookie"], [class*="banner"],
-      [role="navigation"], [role="banner"], [role="complementary"]
-    `).remove();
+    // Remove only essential unwanted elements (keep more content)
+    $body.find('script, style, iframe, form[action*="search"], form[action*="login"]').remove();
 
-    // Try to find main content container first
-    for (const selector of this.contentSelectors) {
-      const element = $body.find(selector);
-      if (element.length > 0) {
-        return this.extractFromElement(element);
+    // Try modern SPA selectors first
+    const spaContainers = ['#root', '#__next', '#app', '[data-reactroot]'];
+    for (const container of spaContainers) {
+      const $container = $body.find(container);
+      if ($container.length > 0 && $container.text().trim().length > 100) {
+        return this.extractAllTextFromElement($container);
       }
     }
 
-    // Fallback to extracting from body
-    return this.extractFromElement($body);
+    // Try content containers
+    const contentSelectors = [
+      'main', 'article', 'section', '.content', '.main-content',
+      '.container', '#content', '[role="main"]', '.post-content',
+      '.entry-content', '.article-content', '.article-body'
+    ];
+
+    for (const selector of contentSelectors) {
+      const $element = $body.find(selector);
+      if ($element.length > 0 && $element.text().trim().length > 100) {
+        return this.extractAllTextFromElement($element);
+      }
+    }
+
+    // Fallback: extract ALL text from body
+    return this.extractAllTextFromElement($body);
   }
 
-  // Extract content from a specific element with structure
+  // Extract ALL text content from an element
+  extractAllTextFromElement($element) {
+    const sections = [];
+
+    // Remove only absolutely necessary elements
+    const $cleaned = $element.clone();
+    $cleaned.find('script, style, noscript').remove();
+
+    // First, try to find structured content (headings, paragraphs, lists)
+    const headings = $cleaned.find('h1, h2, h3, h4, h5, h6');
+    const paragraphs = $cleaned.find('p');
+    const lists = $cleaned.find('ul, ol');
+
+    if (headings.length > 0 || paragraphs.length > 0 || lists.length > 0) {
+      // Extract structured content
+      $cleaned.find('*').each((i, elem) => {
+        const tagName = elem.tagName.toLowerCase();
+        const $elem = this.$(elem);
+        const text = $elem.text().trim();
+
+        if (!text || text.length < 10) return;
+
+        // Check if this text is already included in a parent element
+        const isNestedText = $elem.parents().toArray().some(parent => {
+          const parentText = this.$(parent).text().trim();
+          return parentText.includes(text) && parentText.length > text.length + 50;
+        });
+
+        if (isNestedText) return;
+
+        if (tagName.match(/^h[1-6]$/)) {
+          sections.push({
+            type: 'heading',
+            level: parseInt(tagName[1]),
+            content: text
+          });
+        } else if (tagName === 'p' && text.length > 20) {
+          sections.push({
+            type: 'paragraph',
+            content: text
+          });
+        } else if (tagName === 'ul' || tagName === 'ol') {
+          const items = [];
+          $elem.find('li').each((j, li) => {
+            const liText = this.$(li).text().trim();
+            if (liText && liText.length > 5) items.push(liText);
+          });
+          if (items.length > 0) {
+            sections.push({
+              type: tagName === 'ul' ? 'bullet_list' : 'numbered_list',
+              items: items
+            });
+          }
+        } else if (['blockquote', 'pre', 'code'].includes(tagName) && text.length > 20) {
+          sections.push({
+            type: tagName === 'blockquote' ? 'quote' : 'code',
+            content: text
+          });
+        } else if (['div', 'span', 'section', 'article', 'aside'].includes(tagName) && text.length > 30) {
+          // For generic containers, only add if they contain substantial unique text
+          const childText = $elem.children().map((k, child) => this.$(child).text()).get().join(' ');
+          const uniqueText = text.replace(childText, '').trim();
+
+          if (uniqueText.length > 30) {
+            sections.push({
+              type: 'paragraph',
+              content: uniqueText
+            });
+          }
+        }
+      });
+    }
+
+    // If we didn't get much structured content, extract ALL visible text
+    if (sections.length < 3) {
+      const allText = $cleaned.text().trim();
+      if (allText.length > 100) {
+        // Split text into chunks and create paragraphs
+        const chunks = this.splitTextIntoChunks(allText);
+        sections.length = 0; // Clear any existing sections
+        chunks.forEach(chunk => {
+          if (chunk.trim().length > 30) {
+            sections.push({
+              type: 'paragraph',
+              content: chunk.trim()
+            });
+          }
+        });
+      }
+    }
+
+    return sections;
+  }
+
+  // Split large text into readable chunks
+  splitTextIntoChunks(text) {
+    // Clean up the text
+    const cleanText = text
+      .replace(/\s+/g, ' ')
+      .replace(/\n\s*\n/g, '\n\n')
+      .trim();
+
+    // Split by double newlines first (natural paragraph breaks)
+    let chunks = cleanText.split(/\n\s*\n/);
+
+    // If chunks are too long, split by sentence endings
+    const maxChunkLength = 1000;
+    const finalChunks = [];
+
+    chunks.forEach(chunk => {
+      if (chunk.length <= maxChunkLength) {
+        finalChunks.push(chunk);
+      } else {
+        // Split long chunks by sentences
+        const sentences = chunk.split(/[.!?]+\s+/);
+        let currentChunk = '';
+
+        sentences.forEach(sentence => {
+          if (currentChunk.length + sentence.length < maxChunkLength) {
+            currentChunk += (currentChunk ? '. ' : '') + sentence;
+          } else {
+            if (currentChunk) finalChunks.push(currentChunk + '.');
+            currentChunk = sentence;
+          }
+        });
+
+        if (currentChunk) finalChunks.push(currentChunk);
+      }
+    });
+
+    return finalChunks.filter(chunk => chunk.trim().length > 30);
+  }
+
+  // Legacy fallback - kept for compatibility but new method above is better
+  extractFallbackContent($body) {
+    // This is now handled by extractAllTextFromElement above
+    return this.extractAllTextFromElement($body);
+  }  // Extract content from a specific element with structure
   extractFromElement($element) {
     const sections = [];
     let currentSection = { type: 'paragraph', content: '' };
 
-    // Process all heading and content elements
-    $element.find('h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, pre').each((i, elem) => {
-      const tagName = elem.tagName.toLowerCase();
-      const $elem = this.$(elem);
-      const text = $elem.text().trim();
+    // First try to find structured content
+    const hasStructuredContent = $element.find('h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, pre').length > 0;
 
-      if (!text) return;
+    if (hasStructuredContent) {
+      // Process all heading and content elements
+      $element.find('h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, pre').each((i, elem) => {
+        const tagName = elem.tagName.toLowerCase();
+        const $elem = this.$(elem);
+        const text = $elem.text().trim();
 
-      if (tagName.startsWith('h')) {
-        // If we have accumulated content in current section, save it
-        if (currentSection.content) {
-          sections.push(currentSection);
-          currentSection = { type: 'paragraph', content: '' };
-        }
+        if (!text) return;
 
-        // Add heading section
-        const level = parseInt(tagName.substring(1));
-        sections.push({
-          type: 'heading',
-          level: level,
-          content: text
-        });
-      } else if (tagName === 'p') {
-        // Add to current paragraph or start new one if too long
-        if (currentSection.content.length + text.length < 1000) {
-          currentSection.content += (currentSection.content ? '\n\n' : '') + text;
-        } else {
+        if (tagName.startsWith('h')) {
+          // If we have accumulated content in current section, save it
           if (currentSection.content) {
             sections.push(currentSection);
+            currentSection = { type: 'paragraph', content: '' };
           }
-          currentSection = { type: 'paragraph', content: text };
-        }
-      } else if (tagName === 'ul' || tagName === 'ol') {
-        // Process lists
-        const listItems = [];
-        $elem.find('li').each((liIdx, liElem) => {
-          const liText = this.$(liElem).text().trim();
-          if (liText) listItems.push(liText);
-        });
 
-        if (listItems.length > 0) {
+          // Add heading section
+          const level = parseInt(tagName.substring(1));
           sections.push({
-            type: tagName === 'ul' ? 'bullet_list' : 'numbered_list',
-            items: listItems
+            type: 'heading',
+            level: level,
+            content: text
+          });
+        } else if (tagName === 'p') {
+          // Add to current paragraph or start new one if too long
+          if (currentSection.content.length + text.length < 1000) {
+            currentSection.content += (currentSection.content ? '\n\n' : '') + text;
+          } else {
+            if (currentSection.content) {
+              sections.push(currentSection);
+            }
+            currentSection = { type: 'paragraph', content: text };
+          }
+        } else if (tagName === 'ul' || tagName === 'ol') {
+          // Process lists
+          const listItems = [];
+          $elem.find('li').each((liIdx, liElem) => {
+            const liText = this.$(liElem).text().trim();
+            if (liText) listItems.push(liText);
+          });
+
+          if (listItems.length > 0) {
+            sections.push({
+              type: tagName === 'ul' ? 'bullet_list' : 'numbered_list',
+              items: listItems
+            });
+          }
+        } else if (tagName === 'blockquote') {
+          sections.push({
+            type: 'quote',
+            content: text
+          });
+        } else if (tagName === 'pre') {
+          sections.push({
+            type: 'code',
+            content: text
           });
         }
-      } else if (tagName === 'blockquote') {
-        sections.push({
-          type: 'quote',
-          content: text
-        });
-      } else if (tagName === 'pre') {
-        sections.push({
-          type: 'code',
-          content: text
-        });
-      }
-    });
+      });
 
-    // Add any remaining content
-    if (currentSection.content) {
-      sections.push(currentSection);
+      // Add any remaining content
+      if (currentSection.content) {
+        sections.push(currentSection);
+      }
+    } else {
+      // No structured content found, extract all text
+      const allText = $element.text().trim();
+      if (allText.length > 50) {
+        // Split by sentence endings and group into paragraphs
+        const sentences = allText.split(/[.!?]+\s+/).filter(s => s.trim().length > 20);
+
+        let currentParagraph = '';
+        sentences.forEach(sentence => {
+          const trimmedSentence = sentence.trim();
+          if (currentParagraph.length + trimmedSentence.length < 500) {
+            currentParagraph += (currentParagraph ? '. ' : '') + trimmedSentence;
+          } else {
+            if (currentParagraph) {
+              sections.push({
+                type: 'paragraph',
+                content: currentParagraph + '.'
+              });
+            }
+            currentParagraph = trimmedSentence;
+          }
+        });
+
+        if (currentParagraph) {
+          sections.push({
+            type: 'paragraph',
+            content: currentParagraph + '.'
+          });
+        }
+      }
     }
 
     return sections;
@@ -292,54 +476,199 @@ class ContentExtractor {
   }
 }
 
-// Optional dynamic rendering toggle (set ENABLE_BROWSER_RENDER=true in env and install playwright)
-const ENABLE_BROWSER_RENDER = true
-let playwrightChromium = null; // lazy loaded
-let PLAYWRIGHT_AVAILABLE = false;
+// Optional dynamic rendering toggle (set ENABLE_BROWSER_RENDER=true in env and install puppeteer)
+const ENABLE_BROWSER_RENDER = true;
+let puppeteer = null; // lazy loaded
+let BROWSER_AVAILABLE = false;
 
 console.log(`[Scraper] ENABLE_BROWSER_RENDER env var: "${process.env.ENABLE_BROWSER_RENDER}"`);
 
 (async () => {
   if (ENABLE_BROWSER_RENDER) {
     try {
-      const pw = await import('playwright');
-      playwrightChromium = pw.chromium;
-      PLAYWRIGHT_AVAILABLE = true;
-      console.log('[Scraper] Dynamic rendering enabled. Playwright loaded.');
+      puppeteer = await import('puppeteer');
+      BROWSER_AVAILABLE = true;
+      console.log('[Scraper] Dynamic rendering enabled. Puppeteer loaded.');
     } catch (e) {
-      console.warn('[Scraper] ENABLE_BROWSER_RENDER=true but Playwright not installed. Run: npm install playwright && npx playwright install chromium');
+      console.warn('[Scraper] ENABLE_BROWSER_RENDER=true but Puppeteer not installed. Run: npm install puppeteer');
       console.warn('Error:', e.message);
     }
   } else {
     console.log('[Scraper] Dynamic rendering disabled (ENABLE_BROWSER_RENDER=false).');
   }
 })();
+
+// Enhanced content processing with Gemini AI
+async function enhanceContentWithGemini(content, title, url) {
+  if (!genAI) {
+    console.log('[Gemini] Gemini AI not configured, returning original content');
+    return {
+      enhancedContent: content,
+      summary: '',
+      keyPoints: [],
+      originalLength: content.length,
+      enhancedLength: content.length
+    };
+  }
+
+  try {
+    console.log('[Gemini] Processing content with Gemini AI...');
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+    const prompt = `
+You are an expert content curator and editor. Please analyze and enhance the following web content:
+
+TITLE: ${title}
+URL: ${url}
+CONTENT: ${content}
+
+Please provide:
+1. ENHANCED_CONTENT: Clean, well-structured, and professionally formatted version of the content. Remove redundant text, fix grammar, improve readability, organize into logical sections with proper headings.
+2. SUMMARY: A concise 2-3 sentence summary of the main topic.
+3. KEY_POINTS: Extract 5-8 key points or takeaways from the content.
+
+Format your response as JSON:
+{
+  "enhancedContent": "enhanced and cleaned content here",
+  "summary": "brief summary here",
+  "keyPoints": ["point 1", "point 2", "point 3", ...]
+}
+
+Make sure the enhanced content is comprehensive, well-organized, and professional while preserving all important information.
+`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+
+    // Try to parse JSON response
+    let enhancedData;
+    try {
+      // Clean the response to extract JSON
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        enhancedData = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('No JSON found in response');
+      }
+    } catch (parseError) {
+      console.warn('[Gemini] Failed to parse JSON response, using original content');
+      return {
+        enhancedContent: content,
+        summary: 'Content enhancement failed - using original content',
+        keyPoints: [],
+        originalLength: content.length,
+        enhancedLength: content.length
+      };
+    }
+
+    console.log(`[Gemini] Content enhanced: ${content.length} -> ${enhancedData.enhancedContent.length} characters`);
+
+    return {
+      enhancedContent: enhancedData.enhancedContent || content,
+      summary: enhancedData.summary || '',
+      keyPoints: enhancedData.keyPoints || [],
+      originalLength: content.length,
+      enhancedLength: enhancedData.enhancedContent ? enhancedData.enhancedContent.length : content.length
+    };
+
+  } catch (error) {
+    console.warn('[Gemini] Content enhancement failed:', error.message);
+    return {
+      enhancedContent: content,
+      summary: 'Content enhancement failed - using original content',
+      keyPoints: [],
+      originalLength: content.length,
+      enhancedLength: content.length,
+      error: error.message
+    };
+  }
+}
+
 async function getRenderedHtml(url) {
   if (!ENABLE_BROWSER_RENDER) { console.log('[Scraper] Dynamic render skipped (flag disabled)'); return null; }
-  if (!PLAYWRIGHT_AVAILABLE) { console.log('[Scraper] Dynamic render skipped (Playwright missing)'); return null; }
+  if (!BROWSER_AVAILABLE) { console.log('[Scraper] Dynamic render skipped (Puppeteer missing)'); return null; }
   try {
-    const browser = await playwrightChromium.launch({ headless: true });
-    const context = await browser.newContext({ userAgent: userAgents[Math.floor(Math.random() * userAgents.length)] });
-    const page = await context.newPage();
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+    console.log('[Scraper] Starting dynamic render with Puppeteer...');
+
+    let browser;
+    if (process.env.VERCEL) {
+      // Use chrome-aws-lambda for Vercel deployment
+      const chromium = await import('chrome-aws-lambda');
+      browser = await puppeteer.launch({
+        args: chromium.default.args,
+        defaultViewport: chromium.default.defaultViewport,
+        executablePath: await chromium.default.executablePath,
+        headless: chromium.default.headless,
+        ignoreHTTPSErrors: true,
+      });
+    } else {
+      // Local development
+      browser = await puppeteer.launch({
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--single-process',
+          '--disable-gpu'
+        ]
+      });
+    }
+
+    const page = await browser.newPage();
+    await page.setUserAgent(userAgents[Math.floor(Math.random() * userAgents.length)]);
+
+    // Set viewport
+    await page.setViewport({ width: 1280, height: 720 });
+
+    // Navigate to the page with more generous timeout
+    console.log(`[Scraper] Navigating to ${url}...`);
+    await page.goto(url, {
+      waitUntil: 'networkidle0', // Wait for all network requests to finish
+      timeout: 60000
+    });
+
     // Wait for common content selectors OR timeout
-    const sel = 'main, article, h1, #content, #root, #__next, div[role="main"], [data-reactroot]';
-    await Promise.race([
-      page.waitForSelector(sel, { timeout: 8000 }).catch(() => { }),
-      page.waitForTimeout(4000)
-    ]);
-    // Give frameworks a bit more time to hydrate
-    await page.waitForTimeout(1000);
+    const selectors = [
+      'main', 'article', 'section', 'h1', 'h2', 'p',
+      '#content', '#root', '#__next', '#app',
+      'div[role="main"]', '[data-reactroot]',
+      '.content', '.main-content', '.container'
+    ];
+
+    console.log('[Scraper] Waiting for content to load...');
+    for (const sel of selectors) {
+      try {
+        await page.waitForSelector(sel, { timeout: 3000 });
+        console.log(`[Scraper] Found selector: ${sel}`);
+        break;
+      } catch (e) {
+        // Continue to next selector
+      }
+    }
+
+    // Give React/Vue/Angular extra time to hydrate and render content
+    console.log('[Scraper] Waiting for JavaScript frameworks to hydrate...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // Check if there's any meaningful content
+    const bodyText = await page.evaluate(() => document.body.innerText);
+    console.log(`[Scraper] Page body text length: ${bodyText.length}`);
+
     const html = await page.content();
     await browser.close();
+
+    console.log(`[Scraper] Dynamic render completed. HTML length: ${html.length}`);
     return html;
   } catch (e) {
     console.warn('Dynamic render failed:', e.message);
     return null;
   }
-}
-
-// Enhanced web scraper with beautiful formatting
+}// Enhanced web scraper with beautiful formatting
 class WebScraper {
   constructor() {
     this.maxRetries = 3;
@@ -359,8 +688,8 @@ class WebScraper {
         let metadata = extractor.extractMetadata();
         const bodyTextLen = extractor.$('body').text().replace(/\s+/g, ' ').trim().length;
         const spaIndicators = extractor.$('#root, #__next, div#app, div#__nuxt, [data-reactroot]').length > 0;
-        const tooShort = !plainText || plainText.length < 150 || bodyTextLen < 350 || structuredContent.length === 0;
-        if (!usedDynamic && (tooShort || spaIndicators) && ENABLE_BROWSER_RENDER && PLAYWRIGHT_AVAILABLE) {
+        const tooShort = !plainText || plainText.length < 50 || bodyTextLen < 100 || structuredContent.length === 0;
+        if (!usedDynamic && (tooShort || spaIndicators) && ENABLE_BROWSER_RENDER && BROWSER_AVAILABLE) {
           console.log(`[Scraper] Sparse static HTML (plainLen=${plainText.length}, bodyLen=${bodyTextLen}, sections=${structuredContent.length}) -> trying dynamic render`);
           const rendered = await getRenderedHtml(url);
           if (rendered) {
@@ -376,12 +705,38 @@ class WebScraper {
         }
         const wordCount = this.countWords(plainText);
         metadata.readingTime = Math.ceil(wordCount / 200);
-        const result = { url, title: extractor.extractTitle(), content: plainText, structuredContent, metadata, timestamp: new Date().toISOString(), success: true, wordCount, scrapingAttempts: attempt, dynamicRendered: usedDynamic };
-        const minLen = usedDynamic ? 40 : 100;
+
+        // Enhance content with Gemini AI
+        const enhancement = await enhanceContentWithGemini(plainText, extractor.extractTitle(), url);
+
+        const result = {
+          url,
+          title: extractor.extractTitle(),
+          content: enhancement.enhancedContent,
+          originalContent: plainText,
+          structuredContent,
+          metadata,
+          timestamp: new Date().toISOString(),
+          success: true,
+          wordCount: this.countWords(enhancement.enhancedContent),
+          originalWordCount: wordCount,
+          scrapingAttempts: attempt,
+          dynamicRendered: usedDynamic,
+          aiEnhanced: true,
+          enhancement: {
+            summary: enhancement.summary,
+            keyPoints: enhancement.keyPoints,
+            originalLength: enhancement.originalLength,
+            enhancedLength: enhancement.enhancedLength,
+            error: enhancement.error
+          }
+        };
+
+        const minLen = usedDynamic ? 20 : 50;
         if (!result.content || result.content.length < minLen) {
           throw new Error('Insufficient content extracted - content too short or empty');
         }
-        console.log(`✅ Successfully scraped: ${url} (${result.wordCount} words) dynamic=${usedDynamic}`);
+        console.log(`✅ Successfully scraped and enhanced: ${url} (${result.wordCount} words, enhanced from ${result.originalWordCount}) dynamic=${usedDynamic}`);
         return result;
       } catch (error) {
         lastError = error;
@@ -483,8 +838,10 @@ class WebScraper {
   }
 }
 
-// Enhanced PDF generation with beautiful formatting
-function generatePDF(doc, title, structuredContent, metadata) {
+// Enhanced PDF generation with AI-enhanced content and beautiful formatting
+function generatePDF(doc, result, metadata) {
+  const { title, enhancement } = result;
+
   // Set document metadata
   doc.info['Title'] = title;
   if (metadata.author) doc.info['Author'] = metadata.author;
@@ -493,109 +850,148 @@ function generatePDF(doc, title, structuredContent, metadata) {
   // Title page
   doc.font('Helvetica-Bold')
     .fontSize(24)
+    .fillColor('#2c3e50')
     .text(title, { align: 'center' });
 
   doc.moveDown(1);
 
+  // AI Enhancement Badge
+  if (result.aiEnhanced) {
+    doc.font('Helvetica-Bold')
+      .fontSize(12)
+      .fillColor('#e74c3c')
+      .text('✨ AI-Enhanced Content', { align: 'center' });
+    doc.moveDown(0.5);
+  }
+
   if (metadata.author) {
     doc.font('Helvetica')
       .fontSize(12)
+      .fillColor('#34495e')
       .text(`Author: ${metadata.author}`, { align: 'center' });
   }
 
   if (metadata.publishDate) {
     doc.fontSize(12)
+      .fillColor('#34495e')
       .text(`Published: ${new Date(metadata.publishDate).toLocaleDateString()}`, { align: 'center' });
   }
 
-  doc.moveDown(2);
+  doc.moveDown(1);
+
+  // Stats section
+  doc.font('Helvetica')
+    .fontSize(10)
+    .fillColor('#7f8c8d')
+    .text(`Word Count: ${result.wordCount}`, { align: 'center' });
+
+  if (result.originalWordCount) {
+    doc.text(`Original: ${result.originalWordCount} words → Enhanced: ${result.wordCount} words`, { align: 'center' });
+  }
+
+  doc.text(`Reading Time: ${metadata.readingTime} minutes`, { align: 'center' });
+
+  doc.moveDown(1);
 
   // Add source URL
   doc.fontSize(10)
-    .fillColor('#666')
-    .text(`Source: ${metadata.url}`, { align: 'center' });
+    .fillColor('#95a5a6')
+    .text(`Source: ${result.url}`, { align: 'center' });
 
-  // Add new page for content
+  // AI Summary section (if available)
+  if (enhancement && enhancement.summary) {
+    doc.addPage();
+    doc.font('Helvetica-Bold')
+      .fontSize(18)
+      .fillColor('#2c3e50')
+      .text('AI Summary', { align: 'center' });
+
+    doc.moveDown(1);
+
+    doc.font('Helvetica')
+      .fontSize(12)
+      .fillColor('#34495e')
+      .text(enhancement.summary, {
+        align: 'justify',
+        lineGap: 5,
+        paragraphGap: 10
+      });
+
+    doc.moveDown(1.5);
+
+    // Key Points section
+    if (enhancement.keyPoints && enhancement.keyPoints.length > 0) {
+      doc.font('Helvetica-Bold')
+        .fontSize(16)
+        .fillColor('#2c3e50')
+        .text('Key Points');
+
+      doc.moveDown(0.5);
+
+      enhancement.keyPoints.forEach((point, index) => {
+        doc.font('Helvetica')
+          .fontSize(11)
+          .fillColor('#34495e')
+          .text(`${index + 1}. ${point}`, {
+            indent: 20,
+            lineGap: 3,
+            paragraphGap: 5
+          });
+      });
+    }
+  }
+
+  // Add new page for main content
   doc.addPage();
 
-  // Process structured content
-  structuredContent.forEach(section => {
-    switch (section.type) {
-      case 'heading':
-        const headingSize = 20 - (section.level * 2);
-        doc.font('Helvetica-Bold')
-          .fontSize(headingSize)
-          .fillColor('#333')
-          .text(section.content, { paragraphGap: 5 });
-        doc.moveDown(0.5);
-        break;
+  doc.font('Helvetica-Bold')
+    .fontSize(18)
+    .fillColor('#2c3e50')
+    .text('Content', { align: 'center' });
 
-      case 'paragraph':
-        doc.font('Helvetica')
-          .fontSize(11)
-          .fillColor('#333')
-          .text(section.content, {
-            align: 'left',
-            lineGap: 3,
-            paragraphGap: 8,
-            indent: 10
-          });
-        doc.moveDown(0.5);
-        break;
+  doc.moveDown(1);
 
-      case 'bullet_list':
-        doc.font('Helvetica')
-          .fontSize(11)
-          .fillColor('#333');
-        section.items.forEach(item => {
-          doc.text(`• ${item}`, {
-            indent: 20,
-            lineGap: 3,
-            paragraphGap: 5
-          });
+  // Add separator line
+  doc.strokeColor('#bdc3c7')
+    .lineWidth(1)
+    .moveTo(72, doc.y)
+    .lineTo(doc.page.width - 72, doc.y)
+    .stroke();
+
+  doc.moveDown(1);
+
+  // Process enhanced content - split into paragraphs
+  const content = result.content || '';
+  const paragraphs = content.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+
+  paragraphs.forEach(paragraph => {
+    const trimmedParagraph = paragraph.trim();
+
+    // Check if it looks like a heading (short, title case, etc.)
+    const isHeading = trimmedParagraph.length < 100 &&
+      (trimmedParagraph.match(/^#{1,6}\s/) ||
+        (trimmedParagraph === trimmedParagraph.toUpperCase() && trimmedParagraph.length < 50) ||
+        (trimmedParagraph.split(' ').length <= 8 && trimmedParagraph.length < 80));
+
+    if (isHeading) {
+      doc.font('Helvetica-Bold')
+        .fontSize(14)
+        .fillColor('#2c3e50')
+        .text(trimmedParagraph.replace(/^#+\s*/, ''), {
+          paragraphGap: 8
         });
-        doc.moveDown(0.5);
-        break;
-
-      case 'numbered_list':
-        doc.font('Helvetica')
-          .fontSize(11)
-          .fillColor('#333');
-        section.items.forEach((item, i) => {
-          doc.text(`${i + 1}. ${item}`, {
-            indent: 20,
-            lineGap: 3,
-            paragraphGap: 5
-          });
+      doc.moveDown(0.5);
+    } else {
+      doc.font('Helvetica')
+        .fontSize(11)
+        .fillColor('#34495e')
+        .text(trimmedParagraph, {
+          align: 'justify',
+          lineGap: 3,
+          paragraphGap: 8,
+          indent: 10
         });
-        doc.moveDown(0.5);
-        break;
-
-      case 'quote':
-        try { doc.font('Helvetica-Oblique'); } catch (e) { doc.font('Helvetica'); }
-        doc.fontSize(11)
-          .fillColor('#555')
-          .text(`"${section.content}"`, {
-            align: 'center',
-            indent: 30,
-            lineGap: 5,
-            paragraphGap: 10
-          });
-        doc.moveDown(1);
-        break;
-
-      case 'code':
-        doc.font('Courier')
-          .fontSize(10)
-          .fillColor('#333')
-          .text(section.content, {
-            align: 'left',
-            indent: 20,
-            lineGap: 3,
-            paragraphGap: 5
-          });
-        doc.moveDown(1);
-        break;
+      doc.moveDown(0.5);
     }
   });
 
@@ -608,7 +1004,7 @@ function generatePDF(doc, title, structuredContent, metadata) {
     const pageNumber = i + 1;
 
     // Footer line
-    doc.strokeColor('#ccc')
+    doc.strokeColor('#bdc3c7')
       .lineWidth(0.5)
       .moveTo(72, doc.page.height - 40)
       .lineTo(doc.page.width - 72, doc.page.height - 40)
@@ -616,9 +1012,9 @@ function generatePDF(doc, title, structuredContent, metadata) {
 
     // Footer text
     doc.fontSize(8)
-      .fillColor('#666')
+      .fillColor('#7f8c8d')
       .text(
-        `Page ${pageNumber} of ${pageCount} • Generated on ${new Date().toLocaleDateString()}`,
+        `Page ${pageNumber} of ${pageCount} • Generated on ${new Date().toLocaleDateString()} • AI-Enhanced by Gemini`,
         doc.page.margins.left,
         doc.page.height - 30,
         {
@@ -876,9 +1272,10 @@ router.post('/scrape', async (req, res) => {
         res.setHeader('Content-Disposition', `attachment; filename="${filename}.pdf"`);
 
         doc.pipe(res);
-        generatePDF(doc, result.title, result.structuredContent, {
+        generatePDF(doc, result, {
           ...result.metadata,
-          url: result.url
+          url: result.url,
+          readingTime: Math.ceil(result.wordCount / 200) // Estimated reading time
         });
         doc.end();
 

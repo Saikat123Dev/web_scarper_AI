@@ -4,7 +4,7 @@ import LogoutButton from "./Logout";
 
 // --- Configuration ---
 // Adjust this URL to where your backend server is running.
-const API_BASE_URL = 'http://localhost:4001/api/scrape'; 
+const API_BASE_URL = 'https://web-scarper-ai-4yoq.vercel.app//api/scrape'; 
 
 // Supported languages for translation
 const SUPPORTED_LANGUAGES = [
